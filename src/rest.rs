@@ -40,7 +40,7 @@ use std::thread;
 use url::form_urlencoded;
 
 const CHAIN_TXS_PER_PAGE: usize = 25;
-const MAX_MEMPOOL_TXS: usize = 50;
+const MAX_MEMPOOL_TXS: usize = 25;
 const BLOCK_LIMIT: usize = 10;
 const ADDRESS_SEARCH_LIMIT: usize = 10;
 
@@ -53,6 +53,9 @@ const TTL_LONG: u32 = 157_784_630; // ttl for static resources (5 years)
 const TTL_SHORT: u32 = 10; // ttl for volatie resources
 const TTL_MEMPOOL_RECENT: u32 = 5; // ttl for GET /mempool/recent
 const CONF_FINAL: usize = 10; // reorgs deeper than this are considered unlikely
+
+const INTERNAL_PREFIX: &str = "internal";
+
 
 #[derive(Serialize, Deserialize)]
 struct BlockValue {
@@ -652,6 +655,9 @@ fn handle_request(
                 .ok_or_else(|| HttpError::not_found("Block not found".to_string()))?;
             json_response(txids, TTL_LONG)
         }
+
+      
+
         (&Method::GET, Some(&"block"), Some(hash), Some(&"header"), None, None) => {
             let hash = BlockHash::from_str(hash)?;
             let header = query
@@ -728,6 +734,34 @@ fn handle_request(
 
             json_response(prepare_txs(txs, query, config), ttl)
         }
+        
+        (&Method::GET, Some(&INTERNAL_PREFIX), Some(&"block"), Some(hash), Some(&"txs"), None) => {
+            let hash = BlockHash::from_str(hash)?;
+            
+            let txids = query
+            .chain()
+            .get_block_txids(&hash)
+            .ok_or_else(|| HttpError::not_found("Block not found".to_string()))?;
+
+             // or None for orphaned
+             let confirmed_blockid = query.chain().blockid_by_hash(&hash);
+
+             let txs = txids
+                 .iter()
+                 .map(|txid| {
+                     query
+                         .lookup_txn(&txid)
+                         .map(|tx| (tx, confirmed_blockid.clone()))
+                         .ok_or_else(|| "missing tx".to_string())
+                 })
+                 .collect::<Result<Vec<(Transaction, Option<BlockId>)>, _>>()?;
+ 
+             // XXX orphraned blocks alway get TTL_SHORT
+             let ttl = ttl_by_depth(confirmed_blockid.map(|b| b.height), query);
+ 
+             json_response(prepare_txs(txs, query, config), ttl)
+        }
+
         (&Method::GET, Some(script_type @ &"address"), Some(script_str), None, None, None)
         | (&Method::GET, Some(script_type @ &"scripthash"), Some(script_str), None, None, None) => {
             let script_hash = to_scripthash(script_type, script_str, config.network_type)?;
@@ -884,6 +918,31 @@ fn handle_request(
 
             json_response(tx, ttl)
         }
+
+        (&Method::POST, Some(&INTERNAL_PREFIX), Some(&"txs"), None, None, None) => {
+            let txid_strings: Vec<String> =
+                serde_json::from_slice(&body).map_err(|err| HttpError::from(err.to_string()))?;
+
+            match txid_strings
+                .into_iter()
+                .map(|txid| Txid::from_str(&txid))
+                .collect::<Result<Vec<Txid>, _>>()
+            {
+                Ok(txids) => {
+                    let txs: Vec<(Transaction, Option<BlockId>)> = txids
+                        .iter()
+                        .filter_map(|txid| {
+                            query
+                                .lookup_txn(txid)
+                                .map(|tx| (tx, query.chain().tx_confirming_block(txid)))
+                        })
+                        .collect();
+                    json_response(prepare_txs(txs, query, config), 0)
+                }
+                Err(err) => http_message(StatusCode::BAD_REQUEST, err.to_string(), 0),
+            }
+        }
+
         (&Method::GET, Some(&"tx"), Some(hash), Some(out_type @ &"hex"), None, None)
         | (&Method::GET, Some(&"tx"), Some(hash), Some(out_type @ &"raw"), None, None) => {
             let hash = Txid::from_str(hash)?;
@@ -975,6 +1034,9 @@ fn handle_request(
             // @TODO long ttl if all outputs are either spent long ago or unspendable
             json_response(spends, TTL_SHORT)
         }
+
+
+
         (&Method::GET, Some(&"broadcast"), None, None, None, None)
         | (&Method::POST, Some(&"tx"), None, None, None, None) => {
             // accept both POST and GET for backward compatibility.
@@ -993,12 +1055,226 @@ fn handle_request(
             http_message(StatusCode::OK, txid.to_string(), 0)
         }
 
+        (&Method::POST, Some(&"txs"), Some(&"test"), None, None, None) => {
+            let txhexes: Vec<String> =
+                serde_json::from_str(String::from_utf8(body.to_vec())?.as_str())?;
+
+            if txhexes.len() > 25 {
+                Result::Err(HttpError::from(
+                    "Exceeded maximum of 25 transactions".to_string(),
+                ))?
+            }
+
+            let maxfeerate = query_params
+                .get("maxfeerate")
+                .map(|s| {
+                    s.parse::<f64>()
+                        .map_err(|_| HttpError::from("Invalid maxfeerate".to_string()))
+                })
+                .transpose()?;
+
+            // pre-checks
+            txhexes.iter().enumerate().try_for_each(|(index, txhex)| {
+                // each transaction must be of reasonable size (more than 60 bytes, within 400kWU standardness limit)
+                if !(120..800_000).contains(&txhex.len()) {
+                    Result::Err(HttpError::from(format!(
+                        "Invalid transaction size for item {}",
+                        index
+                    )))
+                } else {
+                    // must be a valid hex string
+                    Vec::<u8>::from_hex(txhex)
+                        .map_err(|_| {
+                            HttpError::from(format!("Invalid transaction hex for item {}", index))
+                        })
+                        .map(|_| ())
+                }
+            })?;
+
+            let result = query
+                .test_mempool_accept(txhexes, maxfeerate)
+                .map_err(|err| HttpError::from(err.description().to_string()))?;
+
+            json_response(result, TTL_SHORT)
+        }
+        (&Method::POST, Some(&"txs"), Some(&"package"), None, None, None) => {
+            let txhexes: Vec<String> =
+                serde_json::from_str(String::from_utf8(body.to_vec())?.as_str())?;
+
+            if txhexes.len() > 25 {
+                Result::Err(HttpError::from(
+                    "Exceeded maximum of 25 transactions".to_string(),
+                ))?
+            }
+
+            let maxfeerate = query_params
+                .get("maxfeerate")
+                .map(|s| {
+                    s.parse::<f64>()
+                        .map_err(|_| HttpError::from("Invalid maxfeerate".to_string()))
+                })
+                .transpose()?;
+
+            let maxburnamount = query_params
+                .get("maxburnamount")
+                .map(|s| {
+                    s.parse::<f64>()
+                        .map_err(|_| HttpError::from("Invalid maxburnamount".to_string()))
+                })
+                .transpose()?;
+
+            // pre-checks
+            txhexes.iter().enumerate().try_for_each(|(index, txhex)| {
+                // each transaction must be of reasonable size (more than 60 bytes, within 400kWU standardness limit)
+                if !(120..800_000).contains(&txhex.len()) {
+                    Result::Err(HttpError::from(format!(
+                        "Invalid transaction size for item {}",
+                        index
+                    )))
+                } else {
+                    // must be a valid hex string
+                    Vec::<u8>::from_hex(txhex)
+                        .map_err(|_| {
+                            HttpError::from(format!("Invalid transaction hex for item {}", index))
+                        })
+                        .map(|_| ())
+                }
+            })?;
+
+            let result = query
+                .submit_package(txhexes, maxfeerate, maxburnamount)
+                .map_err(|err| HttpError::from(err.description().to_string()))?;
+
+            json_response(result, TTL_SHORT)
+        }
+        (&Method::GET, Some(&"txs"), Some(&"outspends"), None, None, None) => {
+            let txid_strings: Vec<&str> = query_params
+                .get("txids")
+                .ok_or(HttpError::from("No txids specified".to_string()))?
+                .as_str()
+                .split(',')
+                .collect();
+
+            if txid_strings.len() > 50 {
+                return http_message(StatusCode::BAD_REQUEST, "Too many txids requested", 0);
+            }
+
+            let spends: Vec<Vec<SpendingValue>> = txid_strings
+                .into_iter()
+                .map(|txid_str| {
+                    Txid::from_str(txid_str)
+                        .ok()
+                        .and_then(|txid| query.lookup_txn(&txid))
+                        .map_or_else(Vec::new, |tx| {
+                            query
+                                .lookup_tx_spends(tx)
+                                .into_iter()
+                                .map(|spend| {
+                                    spend.map_or_else(SpendingValue::default, SpendingValue::from)
+                                })
+                                .collect()
+                        })
+                })
+                .collect();
+
+            json_response(spends, TTL_SHORT)
+        }
+        (
+            &Method::POST,
+            Some(&INTERNAL_PREFIX),
+            Some(&"txs"),
+            Some(&"outspends"),
+            Some(&"by-txid"),
+            None,
+        ) => {
+            let txid_strings: Vec<String> =
+                serde_json::from_slice(&body).map_err(|err| HttpError::from(err.to_string()))?;
+
+            let spends: Vec<Vec<SpendingValue>> = txid_strings
+                .into_iter()
+                .map(|txid_str| {
+                    Txid::from_str(&txid_str)
+                        .ok()
+                        .and_then(|txid| query.lookup_txn(&txid))
+                        .map_or_else(Vec::new, |tx| {
+                            query
+                                .lookup_tx_spends(tx)
+                                .into_iter()
+                                .map(|spend| {
+                                    spend.map_or_else(SpendingValue::default, SpendingValue::from)
+                                })
+                                .collect()
+                        })
+                })
+                .collect();
+
+            json_response(spends, TTL_SHORT)
+        }
+        (
+            &Method::POST,
+            Some(&INTERNAL_PREFIX),
+            Some(&"txs"),
+            Some(&"outspends"),
+            Some(&"by-outpoint"),
+            None,
+        ) => {
+            let outpoint_strings: Vec<String> =
+                serde_json::from_slice(&body).map_err(|err| HttpError::from(err.to_string()))?;
+
+            let spends: Vec<SpendingValue> = outpoint_strings
+                .into_iter()
+                .map(|outpoint_str| {
+                    let mut parts = outpoint_str.split(':');
+                    let hash_part = parts.next();
+                    let index_part = parts.next();
+
+                    if let (Some(hash), Some(index)) = (hash_part, index_part) {
+                        if let (Ok(txid), Ok(vout)) = (Txid::from_str(hash), index.parse::<u32>()) {
+                            let outpoint = OutPoint { txid, vout };
+                            return query
+                                .lookup_spend(&outpoint)
+                                .map_or_else(SpendingValue::default, SpendingValue::from);
+                        }
+                    }
+                    SpendingValue::default()
+                })
+                .collect();
+
+            json_response(spends, TTL_SHORT)
+        }
+
+
         (&Method::GET, Some(&"mempool"), None, None, None, None) => {
             json_response(query.mempool().backlog_stats(), TTL_SHORT)
         }
         (&Method::GET, Some(&"mempool"), Some(&"txids"), None, None, None) => {
             json_response(query.mempool().txids(), TTL_SHORT)
         }
+        
+        (
+            &Method::GET,
+            Some(&INTERNAL_PREFIX),
+            Some(&"mempool"),
+            Some(&"txs"),
+            last_seen_txid,
+            None,
+        ) => {  
+            
+            let last_seen_txid = last_seen_txid.and_then(|txid| Txid::from_str(txid).ok());
+            let max_txs = query_params
+                .get("max_txs")
+                .and_then(|s| s.parse::<usize>().ok())
+                .unwrap_or(MAX_MEMPOOL_TXS);
+            let txs = query
+                .mempool()
+                .txs_page(max_txs, last_seen_txid)
+                .into_iter()
+                .map(|tx| (tx, None))
+                .collect();
+
+            json_response(prepare_txs(txs, query, config), TTL_SHORT)
+        }
+
         (&Method::GET, Some(&"mempool"), Some(&"recent"), None, None, None) => {
             let mempool = query.mempool();
             let recent = mempool.recent_txs_overview();
