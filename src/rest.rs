@@ -1251,6 +1251,31 @@ fn handle_request(
             json_response(query.mempool().txids(), TTL_SHORT)
         }
         
+        
+        (&Method::POST, Some(&INTERNAL_PREFIX), Some(&"mempool"), Some(&"txs"), None, None) => {
+            let txid_strings: Vec<String> =
+                serde_json::from_slice(&body).map_err(|err| HttpError::from(err.to_string()))?;
+
+            match txid_strings
+                .into_iter()
+                .map(|txid| Txid::from_str(&txid))
+                .collect::<Result<Vec<Txid>, _>>()
+            {
+                Ok(txids) => {
+                    let txs: Vec<(Transaction, Option<BlockId>)> = {
+                        let mempool = query.mempool();
+                        txids
+                            .iter()
+                            .filter_map(|txid| mempool.lookup_txn(txid).map(|tx| (tx, None)))
+                            .collect()
+                    };
+
+                    json_response(prepare_txs(txs, query, config), 0)
+                }
+                Err(err) => http_message(StatusCode::BAD_REQUEST, err.to_string(), 0),
+            }
+        }
+
         (
             &Method::GET,
             Some(&INTERNAL_PREFIX),
