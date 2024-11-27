@@ -2,8 +2,7 @@ use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 #[cfg(not(feature = "liquid"))]
 use bitcoin::merkle_tree::MerkleBlock;
 use bitcoin::VarInt;
-use crypto::digest::Digest;
-use crypto::sha2::Sha256;
+use sha2::{Sha256, Digest};
 use hex::FromHex;
 use itertools::Itertools;
 use rayon::prelude::*;
@@ -20,7 +19,7 @@ use elements::{
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::Path;
 use std::sync::{Arc, RwLock};
-
+use std::convert::TryInto;
 use crate::chain::{
     BlockHash, BlockHeader, Network, OutPoint, Script, Transaction, TxOut, Txid, Value,
 };
@@ -136,7 +135,7 @@ pub struct SpendingInput {
     pub confirmed: Option<BlockId>,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Default)]
 pub struct ScriptStats {
     pub tx_count: usize,
     pub funded_txo_count: usize,
@@ -146,7 +145,6 @@ pub struct ScriptStats {
     #[cfg(not(feature = "liquid"))]
     pub spent_txo_sum: u64,
 }
-
 impl ScriptStats {
     pub fn default() -> Self {
         ScriptStats {
@@ -1174,11 +1172,11 @@ fn addr_search_filter(prefix: &str) -> Bytes {
 pub type FullHash = [u8; 32]; // serialized SHA256 result
 
 pub fn compute_script_hash(script: &Script) -> FullHash {
-    let mut hash = FullHash::default();
-    let mut sha2 = Sha256::new();
-    sha2.input(script.as_bytes());
-    sha2.result(&mut hash);
-    hash
+    let mut hasher = Sha256::new();
+    hasher.update(script.as_bytes());
+    hasher.finalize()[..]
+        .try_into()
+        .expect("SHA256 size is 32 bytes")
 }
 
 pub fn parse_hash(hash: &FullHash) -> Sha256dHash {
