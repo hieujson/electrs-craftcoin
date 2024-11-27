@@ -1529,7 +1529,12 @@ fn address_to_scripthash(addr: &str, network: Network) -> Result<FullHash, HttpE
 }
 
 fn parse_scripthash(scripthash: &str) -> Result<FullHash, HttpError> {
-    FullHash::from_hex(scripthash).map_err(|_| HttpError::from("Invalid scripthash".to_string()))
+    let bytes:FullHash = FromHex::from_hex(scripthash)?;
+    if bytes.len() != 32 {
+        Err(HttpError::from("Invalid scripthash".to_string()))
+    } else {
+        Ok(bytes)
+    }
 }
 
 #[derive(Debug)]
