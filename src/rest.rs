@@ -764,7 +764,10 @@ fn handle_request(
 
         (&Method::GET, Some(script_type @ &"address"), Some(script_str), None, None, None)
         | (&Method::GET, Some(script_type @ &"scripthash"), Some(script_str), None, None, None) => {
-            let script_hash = to_scripthash(script_type, script_str, config.network_type)?;
+            let script_hash:FullHash = to_scripthash(script_type, script_str, config.network_type)?;
+            //log hash
+            println!("Computed script hash: {}", DisplayHex::as_hex(&script_hash));
+
             let stats = query.stats(&script_hash[..]);
             json_response(
                 json!({
