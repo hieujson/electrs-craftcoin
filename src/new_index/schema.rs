@@ -3,7 +3,7 @@ use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 use bitcoin::merkle_tree::MerkleBlock;
 use bitcoin::VarInt;
 use sha2::{Sha256, Digest};
-use hex::FromHex;
+use hex::{FromHex, DisplayHex};
 use itertools::Itertools;
 use rayon::prelude::*;
 
@@ -1432,9 +1432,14 @@ pub struct TxHistoryRow {
 
 impl TxHistoryRow {
     fn new(script: &Script, confirmed_height: u32, txinfo: TxHistoryInfo) -> Self {
+
+        let hash = compute_script_hash(&script);
+
+        println!("Computed script hash: {}", DisplayHex::as_hex(&hash));
+
         let key = TxHistoryKey {
             code: b'H',
-            hash: compute_script_hash(&script),
+            hash,
             confirmed_height,
             txinfo,
         };
