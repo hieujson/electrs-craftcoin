@@ -1435,7 +1435,7 @@ impl TxHistoryRow {
 
         let hash = compute_script_hash(&script);
 
-        println!("Computed script hash: {}", DisplayHex::as_hex(&hash));
+        //println!("Computed script hash: {}", DisplayHex::as_hex(&hash));
 
         let key = TxHistoryKey {
             code: b'H',
