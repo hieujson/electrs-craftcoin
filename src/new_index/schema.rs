@@ -3,6 +3,7 @@ use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 use bitcoin::merkle_tree::MerkleBlock;
 use bitcoin::VarInt;
 use sha2::{Sha256, Digest};
+use hex::FromHex;
 use itertools::Itertools;
 use rayon::prelude::*;
 
