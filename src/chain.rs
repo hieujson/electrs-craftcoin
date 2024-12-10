@@ -120,16 +120,16 @@ pub fn genesis_hash(network: Network) -> BlockHash {
 pub fn bitcoin_genesis_hash(network: BNetwork) -> bitcoin::BlockHash {
     match network {
         BNetwork::Bitcoin => BlockHash::from_byte_array(hex_literal::hex!(
-            "9b7bce58999062b63bfb18586813c42491fa32f4591d8d3043cb4fa9e551541b"
+            "64a9141746cbbe06c7e1a4b7f2abb968ccdeba66cd67c1add1091b29db00578e"
         )),
         BNetwork::Testnet => BlockHash::from_byte_array(hex_literal::hex!(
-            "9b7bce58999062b63bfb18586813c42491fa32f4591d8d3043cb4fa9e551541b"
+            "64a9141746cbbe06c7e1a4b7f2abb968ccdeba66cd67c1add1091b29db00578e"
         )),
         BNetwork::Regtest => BlockHash::from_byte_array(hex_literal::hex!(
-            "9b7bce58999062b63bfb18586813c42491fa32f4591d8d3043cb4fa9e551541b"
+            "64a9141746cbbe06c7e1a4b7f2abb968ccdeba66cd67c1add1091b29db00578e"
         )),
         BNetwork::Signet => BlockHash::from_byte_array(hex_literal::hex!(
-            "9b7bce58999062b63bfb18586813c42491fa32f4591d8d3043cb4fa9e551541b"
+            "64a9141746cbbe06c7e1a4b7f2abb968ccdeba66cd67c1add1091b29db00578e"
         )),
         _ => panic!("unknown network {:?}", network),
     }
@@ -141,7 +141,7 @@ pub fn liquid_genesis_hash(network: Network) -> elements::BlockHash {
 
     lazy_static! {
         static ref LIQUID_GENESIS: BlockHash =
-            "9b7bce58999062b63bfb18586813c42491fa32f4591d8d3043cb4fa9e551541b"
+            "64a9141746cbbe06c7e1a4b7f2abb968ccdeba66cd67c1add1091b29db00578e"
                 .parse()
                 .unwrap();
     }
